@@ -1,0 +1,552 @@
+---
+title: "Analysis of SAT Scores Among Public Schools in Massachusetts"
+author: "Natasha Stewart"
+date: "Updated: November 2018"
+output:
+  html_document:
+    code_folding: hide
+    toc: yes
+    toc_float: yes
+runtime: shiny
+resource_files:
+- .Renviron
+- Renviron
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(car)
+library(ggfortify)
+library(ggpubr)
+library(MASS)
+library(data.world)
+library(ggplot2)
+library(shiny)
+library(vcd)
+library(tidyverse)
+library(modelr)
+library(class)
+library(boot)
+library(leaps)
+library(gbm)
+library(glmnet)
+library(gridExtra)
+library(corrplot)
+```
+# Overview
+
+As an independent project, I chose to analyze a dataset on Massachusetts public schools that I found on Kaggle:
+https://www.kaggle.com/ndalziel/massachusetts-public-schools-data
+
+The dataset contains information on the SAT scores of students at each Massachusetts public high school from the 2015-2016 school year as well as information about the student body, the average class size, the total enrollment, and many other factors. A data dictionary is included at the bottom of this document for reference. 
+
+When I began analyzing the data, I did not have any particular objectives or goals in mind. One of the first things I noticed was the strong association between SAT scores and socioeconomic status. Thus, I investigated whether it was possible to tell whether schools are economically advantaged or economically disadvantaged using only SAT scores. From there, I was curious to explore other factors associated with SAT performance, so I investigated different models for predicting SAT scores. 
+
+# Interesting findings:
+
+1. Socioeconomic status is the single best predictor of SAT scores. The relationship is strong and linear.
+
+2. Initially, it appeared that race was associated with SAT scores, but residual analysis revealed that this apparent relationship was primary due to underlying influence of socioeconomic status. Among students in Massachusetts of the same socioeconomic background, White, Hispanic, and African-American students performed similarly. However, the data suggests that Asian students may perform better than students of comparable socio-economic status.
+
+3. The average class size does appear to have a weak association with SAT scores. As the class size increased, SAT scores declined.
+
+```{r, warnings = FALSE, include=FALSE}
+
+options(warn=-1)
+
+data.world::set_config(save_config(auth_token = "eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJwcm9kLXVzZXItY2xpZW50Om5mczI5NiIsImlzcyI6ImFnZW50Om5mczI5Njo6ZGYwNmFkNTYtNzdlMC00NzBkLWI2MTYtZTgwNmQ5NWJmNDE5IiwiaWF0IjoxNTExNzk4ODkzLCJyb2xlIjpbInVzZXJfYXBpX3JlYWQiLCJ1c2VyX2FwaV93cml0ZSIsInVzZXJfYXBpX2FkbWluIl0sImdlbmVyYWwtcHVycG9zZSI6dHJ1ZX0.Qfijl3y-NT8KTS7hZ9IUO1Ma7wTJjiQ8dkD9hDXI1myzRwdQjWJaBqXW0nnrIqskL9W8oOR8fFiORbXdtDj6aQ"))
+project <- "https://data.world/nfs296/public-schools-analysis"
+data <- data.world::query(
+  data.world::qry_sql("SELECT * FROM school"),
+  dataset = project
+  )
+data$SAT <- data$average_sat_math + data$average_sat_reading
+data$percent_ap_takers <- (data$ap_test_takers / data$total_enrollment) * 100
+data$ap_tests_per_all_students <- data$ap_tests_taken / data$total_enrollment
+data$ap_tests_per_test_takers <- data$ap_tests_taken / data$ap_test_takers
+data$percent_ap_one <- (data$ap_score_1 / data$ap_tests_taken) * 100
+data$percent_ap_two <- (data$ap_score_2 / data$ap_tests_taken) *100
+data$percent_ap_three <- (data$ap_score_3 / data$ap_tests_taken) * 100
+data$percent_ap_four <- (data$ap_score_4 / data$ap_tests_taken) * 100
+data$percent_ap_five <- (data$ap_score_5 / data$ap_tests_taken) * 100
+data$average_ap_score <- (data$ap_score_1+data$ap_score_2+data$ap_score_3+data$ap_score_4+data$ap_score_5)/data$ap_test_takers
+
+data$percent_ap_1_test <- (data$ap_one_test / data$ap_tests_taken) * 100
+data$percent_ap_2_tests <- (data$ap_two_tests / data$ap_tests_taken) * 100
+data$percent_ap_3_tests <- (data$ap_three_tests / data$ap_tests_taken) * 100
+data$percent_ap_4_tests <- (data$ap_four_tests / data$ap_tests_taken) * 100
+data$percent_ap_5_plus_tests <- (data$ap_five_or_more_tests / data$ap_tests_taken) * 100
+
+data <- data %>% dplyr::filter(data$SAT>=0)
+data <- na.omit(data)
+attach(data)
+
+```
+
+# Initial Data Exploration with Descriptive Statistics:
+
+The interactive plot below provides a graphical depiction of the relationship between the average SAT scores of Massachusetts schools and any of the numerical predictors in this dataset.
+
+```{r eruptions, echo=FALSE}
+selectInput("variable", label = "Predictors:",
+              choices = c("zip","first_language_not_english_2","english_language_learner_2","students_with_disabilities_2","high_needs_2","economically_disadvantaged_2","males","females","white","african_american","asian","native_american","hispanic","total_of_classes","average_class_size","average_salary","average_in_district_expenditures_per_pupil","total_expenditures","dropped_out","ap_score_1_2","ap_score_3_5","percent_ap_takers","ap_tests_per_all_students","ap_tests_per_test_takers","percent_ap_one","percent_ap_two","percent_ap_three","percent_ap_four","percent_ap_five","percent_ap_1_test","percent_ap_2_tests","percent_ap_3_tests","percent_ap_4_tests","percent_ap_5_plus_tests","average_ap_score"))
+
+renderPlot({
+  ggplot(data, aes(x=(data[[input$variable]]), y=SAT))+ggtitle("Predictors of Average SAT (Math/Reading) Scores")+xlab(input$variable)+ylab("SAT")+geom_point()+geom_smooth(method = "lm")+theme_bw()+ theme(plot.title = element_text(hjust = 0.5))
+})
+
+
+```
+
+Profile of a typical Massachusetts school: According to the summary statistics, the average Massachusetts high school has 914.1 total students. On average, 1.4 percent are English language learners, 15.35 percent are students with disabilities, and 22 percent are economically disadvantaged. The mean number of classes offered at a high school is 492.3, and the average class size is 16.01 students.
+
+# Logistic Regression:
+
+From the initial data exploration, I noticed that there was a strong relationship between SAT scores and economic status. I was curious to explore this relationship by using SAT scores to predict the probability that a school has a high number of socioeconomically disadvantaged students. 
+
+Since 'high' and 'low' are relative concepts, merely predicting the percentage of economically disadvantaged students at a school does not reveal whether or not it is a typical case. Hence, I decided to convert the continuous variable economically_disadvantaged_2 to a discrete one to facilitate comparisons between schools.To do so, I created a new dummy variable, economically_disadvantaged_3, to determine which schools have the most economically disadvantaged students. 
+
+At the median school, 25.9 percent of students are economically disadvantaged. For each school in the dataset, I assigned a value of one to the new dummy variable if the percentage of economically disadvantaged students was equal to or greater than the median. I assigned a value of zero to the dummy variable for the remaining schools. The schools in group one had an average SAT score of 924 while the other schools had an average SAT score of 1072, over 100 points higher. 
+
+To test the robustness of this relationship, I chose to use a logistic regression model. I divided the data into a training set and a validation set using the variable school_code, a random identification number assigned to each school. The training set consists of schools with a school code greater than or equal to 2,630,505 (the median value). The remaining data comprises the validation set. Using the training data, I created a logistic regression model (called glm.model) to predict whether any particular school will fall below or above the 50th percentile of economic disadvantage based on the average SAT score.
+
+The following plot shows the probability that any school will have more economically disadvantaged students than the median school based on its average SAT score.
+
+```{r}
+data$economically_disadvantaged_3<- NA
+data$economically_disadvantaged_3[data$economically_disadvantaged_2>= 25.90] <- 1
+data$economically_disadvantaged_3[data$economically_disadvantaged_2< 25.90] <- 0 
+train = school_code >= 2630505
+traindata <- subset(data,data$school_code >= 2630505)
+testdata <- subset(data,data$school_code < 2630505)
+ggplot(traindata, aes(x=SAT, y=economically_disadvantaged_3)) + geom_point() + geom_smooth(method="glm", method.args=list(family="binomial"))+theme_bw()
+
+```
+
+By utilizing the 'predict' function, I estimated the probability that each school in the validation set will fall below or above the median level of economic disadvantage. 
+
+```{r}
+glm.model <- glm(data$economically_disadvantaged_3~SAT,
+             data,family=binomial,subset=train)
+glm.probability <- predict(glm.model,testdata,type='response') 
+
+```
+
+The ROC for this logistic model is shown below. The curve nearly passes through the upper left corner, suggesting that the model does an excellent job of discriminating between schools with a large percentage of economically disadvantaged students and schools with a small percentage of economically disadvantaged students, solely based on SAT scores. 
+
+```{r}
+#ROC and cost curves
+#Code taken from https://www.r-bloggers.com/illustrated-guide-to-roc-and-auc/ and modified
+
+calculate_roc <- function(data, cost_of_false_positive, cost_of_false_negative, n=100) {
+  true_positive_rate <- function(data, threshold) {
+    sum(glm.probability >= threshold & data$economically_disadvantaged_3[!train] == 1) / sum(data$economically_disadvantaged_3[!train] == 1)
+  }
+  
+  false_positive_rate <- function(data, threshold) {
+    sum(glm.probability >= threshold & data$economically_disadvantaged_3[!train] == 0) / sum(data$economically_disadvantaged_3[!train] == 0)
+  }
+  
+  cost <- function(data, threshold, cost_of_false_positive, cost_of_false_negative) {
+    sum(glm.probability >= threshold & data$economically_disadvantaged_3[!train] == 0) * cost_of_false_positive + sum(glm.probability < threshold & data$economically_disadvantaged_3[!train] == 1) * cost_of_false_negative
+  }
+  
+  roc <- data.frame(threshold = seq(0,1,length.out=n), true_positive_rate=NA, false_positive_rate=NA)
+  roc$true_positive_rate <- sapply(roc$threshold, function(th) true_positive_rate(data, th))
+  roc$false_positive_rate <- sapply(roc$threshold, function(th) false_positive_rate(data, th))
+  roc$cost <- sapply(roc$threshold, function(th) cost(data, th, cost_of_false_positive, cost_of_false_negative))
+  
+  return(roc)
+}
+roc <- calculate_roc(data,1,1,n=10000)
+ggplot(data=roc, aes(x=false_positive_rate,y=true_positive_rate)) + geom_point()+ ggtitle("ROC")+ xlab("False Positive Rate") + ylab("True Positive Rate")+theme_bw() + theme(plot.title = element_text(hjust = 0.5))
+```
+
+The last step in creating this logistic model is to use the estimated probabilities to make actual predictions about the socioeconomic status of each school.To make the actual predictions, I created a new variables called glm.pred. I assigned a value of 1 to glm.pred whenever the estimated probably was greater than or equal to the threshold of 0.5. The following table is a confusion matrix, which shows how well the logistic model performs. In total, it correctly predicted the test data about 84 percent of the time. 
+```{r}
+testdata$glm.pred <- ifelse(glm.probability > 0.5,1,0)
+testdata$actual <- testdata$economically_disadvantaged_3
+table(testdata$glm.pred,testdata$actual)
+```
+
+Accuracy rate
+
+```{r}
+mean(testdata$glm.pred==testdata$actual)
+
+```
+
+
+# Predicting SAT scores:
+
+Thus far, I have discovered that it is possible to accurately classify schools into socioeconomic groups classes based on SAT scores. Now I will explore ways to predict a school's average SAT score from its percentage of socioeconomically disadvantaged students and other factors. I will explore the correlations and interactions between different variables in the data and ultimately suggest two possible models for predicting SAT performance.
+
+# Addressing Multicollinearity:
+
+## Principal Components Analysis (PCA)
+
+Since this dataset contains a large number of predictors, I will investigate the associations between different variables before constructing any models to predict SAT scores. Beginning with the data on SAT scores and 20 other predictors, I performed principal components analysis using the prcomp function. The resulting biplot makes it easy to identify three groups of predictors that tend to vary together.
+
+Group One:
+
+1. Females
+2. Graduated
+3. SAT
+4. White
+
+Group Two:
+
+1. Number of Students
+2. Total Enrollment
+3. Total of Classes
+4. Average Class Size
+5. Average Salary
+
+Group Three:
+
+1. First Language Not English
+2. Hispanic
+3. English Language Learner
+4. African American
+5. Average in District Expenditures per Pupil
+6. Economically Disadvantaged 
+7. Dropped Out
+8. Males
+9. Native American
+10. GED
+11. Students with Disabilities
+
+```{r}
+predictors <- c("SAT","first_language_not_english_2","english_language_learner_2","students_with_disabilities_2","economically_disadvantaged_2","high_needs_2","males","females","white","african_american","asian","native_american","hispanic","total_enrollment","average_class_size","average_salary","average_in_district_expenditures_per_pupil","total_of_classes","number_of_students","dropped_out","graduated","ged")
+
+pca <- prcomp(traindata[,predictors],scale=TRUE)
+#plot(prcomp(data[,predictors],scale=TRUE))
+autoplot(pca, loadings=TRUE,loadings.label=TRUE,loadings.label.size=2.5)+theme_bw()
+```
+
+Since there were groups of predictors that seem to vary together, multicollinearity could be a problem in constructing models from these variables. To confirm this, I computed the variance inflation factor (VIF) for each of the predictors using the vif function in the car package. The results undoubtedly confirmed that the data suffers from multicollinearity. Many of the VIFs were in the range of 100-1,000 when an ideal value is less than five. 
+
+
+```{r}
+model1 <- lm(SAT~first_language_not_english_2+english_language_learner_2+students_with_disabilities_2+economically_disadvantaged_2+high_needs_2+males+females+white+african_american+asian+native_american+hispanic+total_enrollment+average_class_size+average_salary+average_in_district_expenditures_per_pupil+total_of_classes+number_of_students+dropped_out+graduated+ged,traindata)
+#summary(model1)
+vif(model1)
+```
+
+
+## Identifying Redundant Factors
+
+Since many of the VIFs were extremely large, some variables should be removed from the dataset to eliminate redundant information. I next created a correlation plot to determine which predictors are highly correlated. As one would expect, there was a high correlation between the predictors female and male; graduated, dropped out, and ged; and number of students and total classes. Less intuitively, it appears that the predictors African American, Hispanic, economically disadvantaged, and English language learner are all correlated. 
+
+Unfortunately, this correlation reflects the reality of ongoing discrimination in American society as a whole. Although many members of racial and ethnic minorities overcome the oftentimes disproportionate obstacles they face to achieve upward mobility, others are precluded from doing so by multiple intersecting forms of discrimination. According to the [American Psychological Assocation](https://www.apa.org/pi/ses/resources/publications/minorities.aspx), "discrimination and marginalization can serve as a hindrance to upward mobility for ethnic and racial minorities seeking to escape poverty.In the United States, 39 percent of African-American children and adolescents and 33 percent of Latino children and adolescents are living in poverty, which is more than double the 14 percent poverty rate for non-Latino, White, and Asian children and adolescents."
+
+The correlation between socioeconomic status and various demographic factors will be explored further in the next section. 
+
+```{r}
+library(corrplot)
+predictors <- traindata %>% select(SAT,first_language_not_english_2,english_language_learner_2,students_with_disabilities_2,economically_disadvantaged_2,high_needs_2,males,females,white,african_american,asian,native_american,hispanic,total_enrollment,average_class_size,average_salary,average_in_district_expenditures_per_pupil,total_of_classes,number_of_students,dropped_out,graduated,ged)
+corrplot(cor(predictors),type="upper",order="alphabet",tl.cex = .6,tl.srt=45)
+
+
+```
+
+
+# Exploring Connections Between Demographic Factors, Socioeconomic Status, and SAT Scores
+
+As stated above, racial and ethnic minorities often experience barriers to economic mobility. This reality confounds the relationship between demographic factors and SAT scores.If it turns out that these demographic factors are only associated with SAT scores due to the underlying connection with socioeconomic status, then the corresponding demographic variables can be removed from the model. This would not only result in a more satisfying model but also address the multicollinearity problem. As such, I was curious to identify the influence, or lack thereof, that the demographic factors in this dataset have independent of socioeconomic status. 
+
+I isolated the influence of each demographic factors using a partialling out procedure. First, I regressed each demographic variable on economic status, and then I regressed SAT scores on the residuals from the first model. The graphs below reveal that once the influence of race is separated from the influence of socioeconomic status, the impact on SAT scores is significantly reduced. After controlling for economic disadvantage, African American and Hispanic students tend to perform essentially as well as their white counterparts. 
+
+Interestingly, the last plot suggests that there may be one caveat to the general relationship between race and socioeconomic status. It appears that Asian students performed better than their peers even after the influence of socioeconomic status was removed, but it would imprudent to jump to conclusions as the data is noisy. 
+
+```{r}
+#regress race on socioeconomic status
+#regress sat on resid
+
+res_analysis.lm <- lm(african_american~economically_disadvantaged_2,data=traindata)
+residaa <- resid(res_analysis.lm)
+plot1 <- ggplot(traindata, aes(x=economically_disadvantaged_2,y=african_american)) + geom_point()+geom_smooth(method = "lm") + xlab("Percent of Students who are African American")+ggtitle("Regression of African American on Socioeconomic Status") + theme(plot.title = element_text(hjust = 0.5))+theme_bw()
+plot2 <- ggplot(traindata, aes(x=african_american,y=SAT)) + geom_point()+geom_smooth(method = "lm") + xlab("Percent of Students who're African American")+ggtitle("Reg. of 'SAT' on 'African American'") + theme(plot.title = element_text(hjust = 0.5))+theme_bw()
+plot3 <- ggplot(traindata, aes(x=residaa,y=SAT)) + geom_point()+geom_smooth(aes(x=residaa,y=SAT),method="lm",formula = y~x)+ ggtitle("Controlling for Econ. Disadvantage") + theme(plot.title = element_text(hjust = 0.5))+theme_bw()
+grid.arrange(plot2, plot3, ncol=2)
+
+res_analysis.lm <- lm(hispanic~economically_disadvantaged_2,data=traindata)
+residh <- resid(res_analysis.lm)
+plot1 <- ggplot(traindata, aes(x=economically_disadvantaged_2,y=hispanic)) + geom_point()+geom_smooth(method = "lm") + ggtitle("Regression of Hispanic on Socioeconomic Status") + theme(plot.title = element_text(hjust = 0.5))+theme_bw()
+plot2 <- ggplot(data, aes(x=hispanic,y=SAT)) + geom_point()+geom_smooth(method = "lm") +xlab("Percent of Students who are Hispanic")+ggtitle("Regression of 'SAT' on 'Hispanic'") + theme(plot.title = element_text(hjust = 0.5))+theme_bw()
+plot3 <- ggplot(traindata, aes(x=residh,y=SAT)) + geom_point()+geom_smooth(method="lm",formula = y~x)+ ggtitle("Controlling for Econ. Disadvantage") + theme(plot.title = element_text(hjust = 0.5))+theme_bw()
+grid.arrange(plot2, plot3, ncol=2)
+
+res_analysis.lm <- lm(white~economically_disadvantaged_2,data=traindata)
+residw <- resid(res_analysis.lm)
+plot1 <- ggplot(traindata, aes(x=economically_disadvantaged_2,y=white)) + geom_point()+geom_smooth(method = "lm") + ggtitle("Regression of African American on Socioeconomic Status") + theme(plot.title = element_text(hjust = 0.5))+theme_bw()
+plot2 <- ggplot(data, aes(x=white,y=SAT)) + geom_point()+geom_smooth(method = "lm") +xlab("Percent of Students who are White")+ ggtitle("Regression of 'SAT' on 'White'") + theme(plot.title = element_text(hjust = 0.5))+theme_bw()
+plot3 <- ggplot(traindata, aes(x=residw,y=SAT)) + geom_point()+geom_smooth(method="lm",formula = y~x)+ ggtitle("Controlling for Econ. Disadvantage") + theme(plot.title = element_text(hjust = 0.5))+theme_bw()
+grid.arrange(plot2, plot3, ncol=2)
+
+res_analysis.lm <- lm(asian~economically_disadvantaged_2,data=traindata)
+resida <- resid(res_analysis.lm)
+plot1 <- ggplot(traindata, aes(x=economically_disadvantaged_2,y=asian)) + geom_point()+geom_smooth(method = "lm") + xlab("Percent of Students who are Asian")+  ggtitle("Reg. of African American on Socioeconomic Status") + theme(plot.title = element_text(hjust = 0.5))+theme_bw()
+plot2 <- ggplot(traindata, aes(x=asian,y=SAT)) + geom_point()+geom_smooth(method = "lm") + xlab("Percent of Students who are Asian")+ggtitle("Regression of 'SAT' on 'Asain'") + theme(plot.title = element_text(hjust = 0.5))+theme_bw()
+plot3 <- ggplot(traindata, aes(x=resida,y=SAT)) + geom_point()+geom_smooth(method="lm",formula = y~x)+ ggtitle("Controlling for Econ. Disadvantage") + theme(plot.title = element_text(hjust = 0.5))+theme_bw()
+grid.arrange(plot2, plot3, ncol=2)
+
+```
+
+
+## Returning to VIFs and Eliminating Redundant Variables
+
+Through the correlation plots, residual analysis, and intuition, I was able to identify variables that can be eliminated from consideration due to their redundancy with other predictors in the model. I eliminated the variable 'males' the percentage of male students students is determined by the corresponding percentage of female students. Likewise, I eliminated 'graduated' since it is determined by the variable 'dropped_out.' I eliminated the variables 'high_needs_2' due to the close connection with 'economically_disadvantaged_2'. Additionally, I removed 'total_enrollment' and 'number_of_students' since they were highly correlated with 'average_class_size.'
+
+Finally, I eliminated the variables 'african_american' and 'hispanic' from consideration since they are associated with the variable 'economically_disadvantaged_2' and independently contribute no useful information about SAT scores.I initially left the variable 'white' in the model to see whether the VIFs were still too higher (since 'white' was correlated with the variables 'african_american' and 'hispanic' as well as 'economically_disadvantaged_2'). The first set of VIF numbers below confirm that is still a confounding influence, so I subsequently removed the variable 'white' as well.
+
+The second set of VIFs correspond to the predictors that I have determined to be unique and potentially informative. 
+
+```{r}
+model3 <- lm(SAT~white+economically_disadvantaged_2+english_language_learner_2+students_with_disabilities_2+females+asian+native_american+average_class_size+average_salary+average_in_district_expenditures_per_pupil+dropped_out+ged,data=traindata)
+#summary(model3)
+vif(model3)
+
+model4 <- lm(SAT~economically_disadvantaged_2+english_language_learner_2+students_with_disabilities_2+females+asian+native_american+average_class_size+average_salary+average_in_district_expenditures_per_pupil+dropped_out+ged,data=traindata)
+#summary(model3)
+vif(model4)
+```
+
+# Feature Selection:
+
+Having identified a set of unique predictors, I will now determine which are actually useful in predicting SAT scores by considering penalization and shrinkage methods. 
+
+## Penalization Methods
+
+I used the 'regsubsets' function in the 'leaps' package to identify which subset of the predictors would minimize the residual sum of squares (RSS), the adjusted R-squared, the Bayesian Information Criterion (BIC), and Mallow's CP. Ordinary least squares regression seeks to minimize the residual sum of squares, i.e. the sum of the squared errors. In comparison, the adjusted r-squared, the BIC, and Mallow's CP all seek to minimize the RSS (residual sum of squares), subject to an added penalty for each additional parameter.
+
+For the set of eleven predictors that I determined to be potentially important, the residual sum of squares was minimized by using all eleven predictors. Both the adjusted r-squared and Mallow's CP were minimized by choosing nine predictors, and the BIC was minimized by choosing six.
+
+```{r}
+regfit.full <- regsubsets(SAT~economically_disadvantaged_2+english_language_learner_2+students_with_disabilities_2+females+asian+native_american+average_class_size+average_salary+average_in_district_expenditures_per_pupil+dropped_out+ged,data=traindata, nvmax=32)
+
+reg.summary <- summary(regfit.full)
+
+subsetsbic <- data.frame(1:11,reg.summary$bic) 
+names(subsetsbic) <- c("Number","BIC")
+bicplot <- ggplot(subsetsbic,aes(x=Number,y=BIC))+geom_point(size=3)+labs(title="Number of Varibles vs. BIC",x="Number of Variables",y="BIC")+theme_bw()+theme(plot.title = element_text(hjust=0.5))
+
+subsetscp <- data.frame(1:11,reg.summary$cp) 
+names(subsetscp) <- c("Number","CP")
+cplot <- ggplot(subsetscp,aes(x=Number,y=CP))+geom_point(size=3)+labs(title="Number of Varibles vs. Mallow's CP",x="Number of Variables",y="Mallow's CP")+theme_bw()+theme(plot.title = element_text(hjust=0.5))
+
+subsetsrsq <- data.frame(1:11,reg.summary$rsq) 
+names(subsetsrsq) <- c("Number","RSQ")
+rsqplot <- ggplot(subsetsrsq,aes(x=Number,y=RSQ))+geom_point(size=3)+labs(title="Number of Varibles vs. R^2",x="Number of Variables",y="RSQ")+theme_bw()+theme(plot.title = element_text(hjust=0.5))
+
+subsetsadjr2 <- data.frame(1:11,reg.summary$adjr2) 
+names(subsetsadjr2) <- c("Number","Adjusted_R2")
+adjr2plot <- ggplot(subsetsadjr2,aes(x=Number,y=Adjusted_R2))+geom_point(size=3)+labs(title="Number of Varibles vs. Adj R^2",x="Number of Variables",y="R^2")+theme_bw()+theme(plot.title = element_text(hjust=0.5))
+
+subsetsrss <- data.frame(1:11,reg.summary$rss) 
+names(subsetsrss) <- c("Number","RSS")
+rssplot <- ggplot(subsetsrss,aes(x=Number,y=RSS))+geom_point(size=3)+labs(title="Number of Varibles vs. RSS",x="Number of Variables",y="RSS")+theme_bw()+theme(plot.title = element_text(hjust=0.5))
+
+ggarrange(rssplot,adjr2plot)
+ggarrange(bicplot,cplot)
+```
+
+The six best predictors found by minimizing the BIC are shown below, followed by the seven best predictors identified by minimizing the adjusted r-squared and Mallow's CP.
+
+```{r}
+number_predictors <- c(which.min(reg.summary$rss), which.max(reg.summary$adjr2), which.min(reg.summary$cp), which.min(reg.summary$bic))
+names(number_predictors) <- (c("RSS","Adjr2","BIC","CP"))
+number_predictors
+names(coef(regfit.full,6))
+names(coef(regfit.full,9))
+```
+
+## Shrinkage methods - The LASSO
+
+The LASSO is another technique for selecting predictors. It shrinks the estimated coefficients towards zero until unimportant factors essentially drop out of model, minimizing the mean squared error. 
+
+In this case, the LASSO selects eight predictors to be in the final model:
+
+1. economically_disadvantaged_2
+2. english_language_learner_2
+3. females
+4. asian
+5. average_class_size
+6. average_salary
+7. dropped_out
+8. ged
+
+```{r}
+x <- model.matrix(SAT~economically_disadvantaged_2+english_language_learner_2+students_with_disabilities_2+females+asian+native_american+average_class_size+average_salary+average_in_district_expenditures_per_pupil+dropped_out+ged,data=traindata) 
+y <- traindata$SAT
+model.lasso <- glmnet(x,y)
+plot(model.lasso,xvar="lambda",label=TRUE)
+
+#cross validation
+cv.lasso=cv.glmnet(x,y)
+plot(cv.lasso)
+coef(cv.lasso)
+```
+
+
+# Multiple Linear Regression:
+
+Next, I created a multiple linear regression model to predict each school's average SAT score using the features that were determined to be important by both the best subsets regression and the LASSO regression. I added an interaction term between dropped_out and ged to both of the models and observed a notable improvement in the R-squared. This term may help isolate the influence of increasing the proportion of GED holders among schools with a high drop-out rate. 
+
+```{r}
+modelfull <- lm(SAT~economically_disadvantaged_2+english_language_learner_2+females+asian+average_class_size+average_salary+dropped_out+ged+dropped_out:ged)
+summary(modelfull)
+```
+
+
+## Analysis of Residuals Plots for Linear Regression Model:
+
+The residual plots are shown below from the full and reduced models, respectively. For both models, the assumptions of linear regression are reasonably well-satisfied. The residuals are independent and follow an approximately normal distribution.
+
+```{r}
+par(mfrow=c(2,2))
+plot(modelfull)
+par(mfrow=c(1,1))
+```
+
+## Validaton
+
+Using the test data, I predicted the average SAT score at each school and compared this value to its actual average SAT score. The mean error was 0.2092 points, with an inter-quartile range of 53.4284. Thus, the model performs fairly well since it predicts the average SAT score within 50 points (out of 1600) approximately 50 percent of the time. 
+
+```{r}
+predictions <- predict(modelfull,testdata)
+errors <- (predictions - testdata$SAT)
+ggplot(testdata)+geom_point(aes(x=economically_disadvantaged_2,y=SAT),colour="red",size=2)+geom_point(aes(economically_disadvantaged_2,predictions),color="blue",size=2)+theme_bw()+ ggtitle("Actual Data (Red) vs. Prediction (Blue)") + theme(plot.title = element_text(hjust = 0.5))
+summary(errors)
+boxplot(errors, main = "Boxplot of Errors")
+hist(errors,breaks=c(seq(-200,200,25)),main="Histogram of Errors")
+testdata$predictions <- predictions
+
+```
+
+# Data Dictionary:
+
+School type: Either public or charter
+
+Zip: Zip code
+
+Grade: Grade level(s) taught at a school
+
+Total enrollment: Total number of students attending a school
+
+first_language_not_English: Total number of students whose first language was not English
+
+first_language_not_english_2: Percentage of students whose first language was not English
+
+english_language_learner: Total number of students who are learning English (not yet fluent)
+
+english_language_learner_2: Percentage of students are learning English
+
+students_with_disabilities: Total number of students who have a disability 
+
+students_with_disabilities_2: Percentage of students who have a disability
+
+high_needs: Total number of students with high needs
+
+high_needs_2: Percentage of students with high needs
+
+economically_disadvantaged: Total number of economically disadvantaged students
+
+economically_disadvantaged_2: Percentage of economically disadvantaged students
+
+african-american: Percentage of students who are African-American
+
+asian: Percentage of students who are Asian
+
+hispanic: Percentage of students who are Hispanic
+
+white: Percentage of students who are white
+
+native_american: Percentage of students who are Native American
+
+native_hawaiian_pacific_islander: Percentage of students who are Hawaiian or a Pacific Islander
+
+Males: The percentage of students who are male
+
+Females: The percentage of students who are female
+
+total_of_classes: The total number of different courses offered at a school
+
+average_class_size: The average number of pupils in a class
+
+average_salary: Average salary of a school employee
+
+average_in_district_expenditures_per_pupil: Average amount of money spent per pupil by a school district
+
+dropped_out: Percentage of students who have dropped out of high school
+
+ap_test_takers: The number of students who took at least one AP test
+
+ap_tests_taken: The total number of AP test administer at a school
+
+ap_one_test: The number of students who took exactly one AP test
+
+ap_two_tests: The number of students who took exactly two AP tests
+
+ap_three_tests: The number of students who took exactly three AP tests
+
+ap_four_tests: The number of students who took exactly four AP tests
+
+ap_five_or_more_tests: The number of students who took five or more AP tests
+
+ap_score_1: The total number of scores equal to one (out of a possible five) received by students at a school 
+
+ap_score_2: The total number of scores equal to two received by students at a school
+
+ap_score_3: The total number of scores equal to three received by students at a school
+
+ap_score_4: The total number of scores equal to four receive by students at a school
+
+ap_score_5: The total number of scores equal to five received by students at a school
+
+ap_score_1_2: The percentage of all AP scores that were failing (scores of one and two)
+
+ap_score_3_5: The percentage of all AP scores that were passing (scores of three and higher)
+
+average_sat_reading: The average SAT reading score (out of 800 possible points)
+
+average_sat_math: The average SAT math scores (out of 800 possible points)
+
+###Variables I've introduced
+
+SAT: Combined SAT math and SAT critical reading scores
+
+percent_ap_takers: The percentage of all students who took at least one AP test
+
+ap_tests_per_all_students: The average number of AP tests taken by all students
+
+ap_tests_per_test_takers: The average number of AP tests taken by students who took at least one AP test
+
+percent_ap_one: The percentage of all AP scores that were a one
+
+percent_ap_two: The percentage of all AP scores that were a two
+
+percent_ap_three: The percentage of all AP scores that were a three
+
+percent_ap_four: The percentage of all AP scores that were a four
+
+percent_ap_five: The percentage of all AP scores that were a five
+
+average_ap_score: The mean score based on all AP tests taken at a school
+
+percent_ap_1_test: The percentage of students who took one AP test out of all AP test takers at a school
+
+percent_ap_2_tests: The percentage of students who took two AP tests out of all AP test takers at a school
+
+percent_ap_3_tests: The percentage of students who took three AP tests out of all AP test takers at a school
+
+percent_ap_4_tests: The percentage of students who took four AP tests out of all AP test takers at a school
+
+percent_ap_5_plus_tests: The percentage of students who took five or more AP tests out of all AP test takers at a 
+school
+
+
+# Display Session Information
+```{r}
+sessionInfo()
+```
